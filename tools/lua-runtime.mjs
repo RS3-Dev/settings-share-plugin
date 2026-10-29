@@ -5,7 +5,7 @@ export const root = new URL("../", import.meta.url);
 
 export async function createLua() {
   const factory = new LuaFactory();
-  for (const file of ["main.lua", "lib/json.lua", "lib/uuid.lua",
+  for (const file of ["main.lua", "lib/json.lua", "lib/uuid.lua", "lib/http_probe.lua", "lib/checkpoint.lua", "lib/http_callbacks.lua",
     "examples/settingssharedebug/main.lua", "examples/settingssharedebug/plugin.json"]) {
     await factory.mountFile(`/${file}`, await readFile(new URL(file, root), "utf8"));
   }

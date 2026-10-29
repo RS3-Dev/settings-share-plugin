@@ -1,32 +1,12 @@
 local UUID = {}
 
 -- A sandbox-compatible identifier generator, not a cryptographic RNG.
--- Keep its state private so generating codes does not reseed math.random.
-local modulus = 2147483647
-local counter = 0
-local state = 1
-local seed = tostring({}) .. ":" .. tostring(math.random())
-
-for index = 1, #seed do
-    state = (state * 131 + string.byte(seed, index)) % modulus
-end
-if state == 0 then state = 1 end
-
-local function byte()
-    state = (state * 48271) % modulus
-    return state % 256
-end
+-- Draw every byte from the client's RNG instead of expanding a small private
+-- seed. Do not reseed math.random or perform any work when this module loads.
 
 function UUID.Generate()
-    counter = counter + 1
     local bytes = {}
-    for index = 1, 16 do bytes[index] = byte() end
-
-    local value = counter
-    for index = 16, 13, -1 do
-        bytes[index] = (bytes[index] + value % 256) % 256
-        value = math.floor(value / 256)
-    end
+    for index = 1, 16 do bytes[index] = math.random(0, 255) end
 
     bytes[7] = 0x40 + bytes[7] % 0x10
     bytes[9] = 0x80 + bytes[9] % 0x40

@@ -12,7 +12,6 @@ assert.equal(base.pathname, "/");
 const jobs = [];
 const lua = await createLua();
 const payload = 'settingsshare integration test\nquotes: " \\ tab:\t controls:\u0000\u0001 Unicode: café 雪 🎮';
-const player = `settingsshare-test-${randomUUID()}`;
 
 async function http(path, options = {}) {
   const response = await fetch(new URL(path, base), {
@@ -35,14 +34,12 @@ async function call(method, args) {
     local started, problem
     if input.method == "write" then started, problem = api.write(a["1"], callback)
     elseif input.method == "read" then started, problem = api.read(a["1"], callback)
-    elseif input.method == "save" then started, problem = api.sync.save(a["1"], a["2"], a["3"], callback)
-    elseif input.method == "fetch" then started, problem = api.sync.fetch(a["1"], a["2"], callback)
     elseif input.method == "dump" then started, problem = api.dump.create(a["1"], callback)
     else error("Unknown method") end
     assert(started ~= nil, problem)
     __started = started
     assert(__calls == 0)
-    tick()
+    for _ = 1, 4 do tick() end
     assert(__calls == 0)
   `);
   assert.equal(jobs.length, 1, "one helper call must start exactly one request");
@@ -56,9 +53,11 @@ async function call(method, args) {
     local result = Json.decode(__response)
     local request = active[result.id]
     request.data, request.successful, request.responseCode = result.data, result.successful, result.responseCode
+    request.progressCallback(request)
     request.finished = true
+    request.completionCallback(request)
     assert(__calls == 0, "network completion must not invoke a native callback")
-    tick()
+    for _ = 1, 3 do tick() end
     assert(__calls == 1, "callback must run exactly once on Logic")
     tick()
     assert(__calls == 1)
@@ -86,8 +85,9 @@ try {
   assert.equal(health.status, 200);
   const info = await health.json();
   assert.equal(info.backend, "selfhosted-sqlite");
-  assert.deepEqual(info.services, { share: "ok", sync: "ok", dump: "ok" });
-  console.log("PASS live backend health (share, sync, dump)");
+  assert.equal(info.services.share, "ok");
+  assert.equal(info.services.dump, "ok");
+  console.log("PASS live backend health (share, dump)");
 
   lua.global.set("__base", base.origin);
   lua.global.set("__send", (id, path, body, contentType) => { jobs.push({ id, path, body, contentType }); });
@@ -111,8 +111,9 @@ try {
         assert(name == "Content-Type")
         self.contentType = value
       end
-      function request:Post(body, ...)
-        assert(inLogic and select("#", ...) == 0)
+      function request:Post(body, completion, progress, ...)
+        assert(inLogic and type(completion) == "function" and type(progress) == "function" and select("#", ...) == 0)
+        self.completionCallback, self.progressCallback = completion, progress
         __send(self.id, path, body, self.contentType)
       end
       active[request.id] = request
@@ -137,16 +138,6 @@ try {
   failure(await call("read", ["invalid"]), 400, "invalid_code");
   failure(await call("read", ["000000000000000000000000"]), 404, "not_found_or_expired");
   console.log("PASS share rate-limit metadata, invalid/missing/legacy-code errors");
-
-  success(await call("save", ["PluginDev", player, payload]), true, 604800);
-  success(await call("fetch", ["PluginDev", player]), payload, 604800);
-  const cooldown = await call("save", ["PluginDev", player, "must not replace saved payload"]);
-  failure(cooldown, 429, "rate_limited");
-  assert(cooldown.metadata.retryAfterSeconds > 0);
-  success(await call("fetch", ["PluginDev", player]), payload, 604800);
-  failure(await call("fetch", ["PluginDev", `${player}-other`]), 404, "not_found_or_expired");
-  failure(await call("fetch", ["settingsshare-test-unregistered", player]), 400, "unregistered_plugin");
-  console.log("PASS sync round trip, cooldown, separate player keys, name registry");
 
   const dump = await call("dump", [payload]);
   success(dump, dump.value, 86400);

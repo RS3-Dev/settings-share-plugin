@@ -1,11 +1,15 @@
 package.path = "./?.lua;./?/init.lua;" .. package.path
 local Json = require("lib/json")
 local requests, onLogic, subscriptions = {}, nil, 0
-local inLogic = false
+local inLogic, frame, nativeFrame, nativeGroup, responseFrame = false, 0, -1, nil, -1
 local stages = {}
 log = function(_, stage) stages[#stages + 1] = stage end
-local _, onMainThread = coroutine.running()
-local expectedContext = onMainThread and "main thread" or "coroutine"
+local function operation(group)
+    assert(inLogic, "native operations must run on Logic")
+    assert(frame ~= nativeFrame or (group == "response" and nativeGroup == "response"),
+        "native phases must never be combined in one Logic update")
+    nativeFrame, nativeGroup = frame, group
+end
 PluginPermissions = { httpAccess = {} }
 Plugin = { urls = { service = {} }, HasPermission = function() return true end }
 Event = { Logic = { Subscribe = function(name, callback)
@@ -13,119 +17,147 @@ Event = { Logic = { Subscribe = function(name, callback)
     subscriptions, onLogic = subscriptions + 1, callback
 end } }
 HTTPRequest = { new = function(_, path)
-    assert(inLogic, "native requests must be constructed on Logic, never on a UI hook")
-    local request = { path = path, finished = false }
-    function request:AddHeader() end
-    function request:Post(body, ...)
-        assert(inLogic, "Post must run on Logic")
-        assert(select("#", ...) == 0, "neither completion nor progress callback may reach native HTTP")
-        self.body = Json.decode(body)
+    operation("construct")
+    local state = { finished = false }
+    local request = setmetatable({ path = path }, {
+        __index = function(_, key)
+            if key == "finished" then
+                operation("finished")
+                assert(state.postFrame and frame > state.postFrame, "never poll before POST or in its update")
+                if state.finished then state.finishedFrame = frame end
+            elseif key == "successful" or key == "data" or key == "errorInfo" then
+                operation("response")
+                assert(state.finishedFrame and frame > state.finishedFrame, "read response on a later update than finished")
+                responseFrame = frame
+                if key == "data" then
+                    assert(state.dataReadFrame ~= frame, "read the native body only once")
+                    state.dataReadFrame = frame
+                end
+            end
+            return state[key]
+        end,
+        __newindex = function(_, key, value) state[key] = value end,
+    })
+    function request:AddHeader() operation("header") end
+    function request:Post(body, completion, progress, ...)
+        operation("post")
+        assert(type(completion) == "function" and type(progress) == "function" and select("#", ...) == 0)
+        state.completion, state.progress = completion, progress
+        state.body, state.postFrame = Json.decode(body), frame
     end
-    function request:Cancel() self.cancelled = true end
+    function request:Cancel() operation("cancel"); state.cancelled = true end
     requests[#requests + 1] = request
     return request
 end }
+local function tick(count)
+    for _ = 1, count or 1 do
+        frame, inLogic = frame + 1, true
+        onLogic()
+        inLogic = false
+    end
+end
 local api = dofile("main.lua")
-assert(subscriptions == 0, "loading the helper must not subscribe to native events")
-assert(#stages == 0)
+assert(subscriptions == 0 and #stages == 0, "loading must not subscribe or initialize HTTP")
 api.setDebugLogging(true)
-local pendingCode
-local calls = 0
-local function callback(code, problem)
-    assert(inLogic, "application callbacks must run only in the normal Logic update")
+local pendingCode, calls = nil, 0
+pendingCode = api.write("settings", function(code, problem)
+    assert(inLogic and frame > responseFrame, "dispatch must follow response reading on a separate update")
     assert(code == pendingCode and problem == nil)
     calls = calls + 1
-end
-local function tick()
-    inLogic = true
-    onLogic()
-    inLogic = false
-end
-pendingCode = api.write("settings", callback)
-assert(type(pendingCode) == "string" and #pendingCode == 36)
-assert(#requests == 0, "calling a helper must only enqueue the request")
-assert(stages[1] == "checking HTTP access")
-assert(stages[2] == "Lua context at Logic subscription: " .. expectedContext)
-assert(stages[3] == "subscribing to Logic" and stages[4] == "Logic subscription returned")
-assert(stages[5] == "queued for next Logic update")
+end)
+assert(type(pendingCode) == "string" and #pendingCode == 36 and #requests == 0)
 tick()
-assert(subscriptions == 1 and requests[1].body.code == pendingCode)
-assert(stages[6] == "Lua context at HTTP construction: " .. expectedContext)
-assert(stages[7] == "constructing request" and stages[8] == "adding header")
-assert(stages[9] == "calling Post without callbacks" and stages[10] == "Post returned; waiting for finished")
+assert(#requests == 0, "the first update only rechecks permission")
+tick()
+assert(#requests == 1 and requests[1].body == nil, "construction must not POST")
+tick()
+assert(requests[1].body == nil, "header setup must not POST")
+tick()
+assert(requests[1].body.code == pendingCode and subscriptions == 1)
+local unreadable = setmetatable({}, {
+    __index = function() error("native callbacks must not read the request") end,
+    __newindex = function() error("native callbacks must not change the request") end,
+})
+-- Simulate native callbacks outside Logic, even before completion.
+requests[1].progress(unreadable)
+requests[1].completion(unreadable)
+assert(calls == 0, "native callbacks must not dispatch application results")
 api.setDebugLogging(false)
 tick()
-assert(calls == 0, "unfinished requests must not produce callbacks")
-requests[1].data, requests[1].successful, requests[1].finished = Json.encode({ code = pendingCode }), true, true
-assert(calls == 0, "setting finished must not invoke an HTTP callback")
+assert(calls == 0)
+requests[1].finished, requests[1].successful, requests[1].data = true, true, Json.encode({ code = pendingCode })
+assert(calls == 0, "network completion must not invoke Lua callbacks")
+tick()
+assert(calls == 0, "finished observation must not dispatch")
+tick()
+assert(calls == 0, "response reading must not dispatch")
 tick()
 assert(calls == 1)
 tick()
-assert(calls == 1, "finished requests must be removed before dispatch")
+assert(calls == 1)
 
--- Callback reentrancy may queue another request, but never processes it in the same update.
+-- A callback may enqueue another request or recursively invoke Logic safely.
 local order = {}
-assert(api.read("old-code", function(data)
+assert(api.read("first", function(data)
     order[#order + 1] = data
-    assert(api.read("next-code", function(nextData) order[#order + 1] = nextData end))
-    onLogic() -- Recursive updates do not redispatch the active batch.
+    assert(api.read("second", function(nextData) order[#order + 1] = nextData end))
+    onLogic()
 end))
-tick()
+tick(4)
 local first = requests[#requests]
-first.data, first.successful, first.finished = '{"data":"first"}', true, true
-tick()
+first.finished, first.successful, first.data = true, true, '{"data":"first"}'
+tick(3)
 assert(#order == 1 and order[1] == "first")
-tick()
+tick(4)
 local second = requests[#requests]
-second.data, second.successful, second.finished = '{"data":"second"}', true, true
-tick()
-assert(#order == 2 and order[2] == "second")
-assert(subscriptions == 1, "one subscription serves all requests")
+second.finished, second.successful, second.data = true, true, '{"data":"second"}'
+tick(3)
+assert(#order == 2 and order[2] == "second" and subscriptions == 1)
 
--- Completion without a response is a failure, not a request left pending forever.
 local failed
 assert(api.read("timeout", function(value, err) failed = value == nil and err == "Timed out" end))
-tick()
+tick(4)
 local timedOut = requests[#requests]
 timedOut.finished, timedOut.successful, timedOut.errorInfo = true, false, "Timed out"
-tick()
+tick(3)
 assert(failed)
 
--- Keep active native requests strongly referenced until the update loop observes completion.
+-- Retain native requests until completion, then release after dispatch.
 local weak = setmetatable({}, { __mode = "v" })
 assert(api.read("keep-alive"))
-tick()
+tick(4)
 weak[1] = requests[#requests]
 table.remove(requests)
 collectgarbage("collect")
 assert(weak[1] ~= nil)
 weak[1].finished, weak[1].successful, weak[1].data = true, true, '{"data":"ok"}'
-tick()
+tick(3)
 collectgarbage("collect")
 assert(weak[1] == nil)
 
--- Bound retained native request objects and reclaim slots on completion.
-local batchStart = #requests + 1
+-- FIFO: at most one active request, with 32 total queued/active entries.
+local beforeBatch = #requests
 for _ = 1, 32 do assert(api.read("pending")) end
-tick()
-local count = #requests
+tick(4)
+assert(#requests == beforeBatch + 1)
 local started, problem = api.read("overflow")
 assert(started == nil and problem:find("too many pending", 1, true))
-assert(#requests == count)
-for index = batchStart, #requests do
-    requests[index].finished, requests[index].successful = true, false
+for index = 1, 32 do
+    local active = requests[#requests]
+    active.finished, active.successful = true, false
+    tick(3)
+    if index < 32 then tick(4) end
 end
-tick()
 assert(api.read("slot-reclaimed"))
 
--- If normal-update dispatch is unavailable, never fall back to native callbacks.
+-- Never replace an unavailable Logic loop with response handling in native callbacks.
 Event = nil
 local unsupported = dofile("main.lua")
-count = #requests
-started, problem = unsupported.write("settings", callback)
+local count = #requests
+started, problem = unsupported.write("settings")
 assert(started == nil and problem:find("Logic event", 1, true) and #requests == count)
 Event = { Logic = { Subscribe = function() error("unavailable") end } }
 unsupported = dofile("main.lua")
-started, problem = unsupported.read("code", callback)
+started, problem = unsupported.read("code")
 assert(started == nil and problem:find("could not subscribe", 1, true) and #requests == count)
 print("transport_polling_test: ok")

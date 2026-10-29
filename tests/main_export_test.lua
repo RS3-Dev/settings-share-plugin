@@ -17,16 +17,17 @@ function log(...)
 end
 
 PluginPermissions = { httpAccess = {} }
+local permissionGranted = false
 Plugin = {
     urls = { service = "https://example.test" },
-    HasPermission = function(value) return value == PluginPermissions.httpAccess end,
+    HasPermission = function(value) return permissionGranted and value == PluginPermissions.httpAccess end,
 }
 HTTPRequest = {}
 function HTTPRequest.new(baseURL, path)
     local request = { baseURL = baseURL, path = path, headers = {}, finished = false }
     function request:AddHeader(name, value) self.headers[name] = value end
-    function request:Post(body, ...)
-        assert(select("#", ...) == 0, "HTTP must never receive a Lua callback")
+    function request:Post(body, completion, progress, ...)
+        assert(type(completion) == "function" and type(progress) == "function" and select("#", ...) == 0)
         self.body = body
     end
     requests[#requests + 1] = request
@@ -36,7 +37,7 @@ end
 local function finish(request, response)
     request.successful, request.data, request.errorInfo = response.successful, response.data, response.errorInfo
     request.finished = true
-    logicUpdate({ logicTick = 1 })
+    for _ = 1, 3 do logicUpdate() end
 end
 
 local globals = {}
@@ -49,13 +50,30 @@ assert(type(api.read) == "function" and type(api.write) == "function")
 assert(api.Read == nil and api.Write == nil and api.Poll == nil)
 local exported = 0
 for _ in pairs(api) do exported = exported + 1 end
-assert(exported == 5 and type(api.setDebugLogging) == "function")
-assert(type(api.sync) == "table" and type(api.sync.save) == "function" and type(api.sync.fetch) == "function")
+assert(exported == 8 and type(api.setDebugLogging) == "function" and api.version == "3.0.0")
+assert(type(api.diagnostics.step) == "function" and type(api.diagnostics.nextStep) == "function")
+assert(type(api.createCode) == "function" and type(api.upload) == "function")
+assert(api.sync == nil, "settings sync is no longer exported")
 assert(type(api.dump) == "table" and type(api.dump.create) == "function")
+
+-- The dependency must load before HTTP is granted. All network entry points
+-- fail immediately, without subscribing, constructing requests, or callbacks.
+local deniedCallbackCalled = false
+local function deniedCallback() deniedCallbackCalled = true end
+for _, call in ipairs({
+    function() return api.write("settings", deniedCallback) end,
+    function() return api.read("code", deniedCallback) end,
+    function() return api.dump.create("settings", deniedCallback) end,
+}) do
+    local started, problem = call()
+    assert(started == nil and problem == "Settings Share requires HTTP access.")
+end
+assert(logicUpdate == nil and #requests == 0 and not deniedCallbackCalled)
+permissionGranted = true
 
 local function start(fn, ...)
     local started, problem = fn(...)
-    if started then logicUpdate() end
+    if started then for _ = 1, 4 do logicUpdate() end end
     return started, problem
 end
 
@@ -70,7 +88,7 @@ requests[1].successful = true
 requests[1].data = '{"code":"' .. code .. '"}'
 assert(written == nil, "native completion must not run Lua")
 requests[1].finished = true
-logicUpdate()
+for _ = 1, 3 do logicUpdate() end
 assert(written == code and writeProblem == nil)
 
 local fetched, readProblem
@@ -81,7 +99,7 @@ assert(#requests == 2 and requests[2].path == "/api/v1/settings-share/fetch")
 requests[2].successful = true
 requests[2].data = '{"data":"shared settings"}'
 requests[2].finished = true
-logicUpdate()
+for _ = 1, 3 do logicUpdate() end
 assert(fetched == "shared settings" and readProblem == nil)
 
 local Json = require("lib/json")
@@ -162,13 +180,14 @@ for _, method in ipairs({ "AddHeader", "Post" }) do
     local setupProblem
     value, problem = start(api.read, "code", function(_, err) setupProblem = err end)
     assert(value == true and problem == nil)
-    logicUpdate()
+    for _ = 1, 2 do logicUpdate() end
     assert(setupProblem == "Settings Share could not start the HTTP request.")
 end
 HTTPRequest.new = constructor
 -- Exercise a resolved URL alias without making assumptions about its type.
 assert(start(api.read, "code"))
 assert(requests[#requests].baseURL == Plugin.urls.service)
+finish(requests[#requests], { successful = true, data = '{"data":"ok"}' })
 count = #requests
 HTTPRequest.new = function() error("transport unavailable") end
 local setupProblem
