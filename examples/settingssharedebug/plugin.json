@@ -1,0 +1,10 @@
+{
+  "name": "settingssharedebug",
+  "version": "1.0.0",
+  "description": "Small manual test panel for the Settings Share dependency.",
+  "contactEmailAddress": "plugins@rs3.dev",
+  "requiredDependencies": { "settingsshare": "settingsshare", "prettyui": "prettyui" },
+  "requiredPermissions": [],
+  "optionalPermissions": [],
+  "urls": {}
+}

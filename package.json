@@ -1,0 +1,11 @@
+{
+  "name": "settingsshare-plugin-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node tools/test-lua.mjs",
+    "test:live": "node tools/test-live.mjs"
+  },
+  "engines": { "node": ">=22" },
+  "devDependencies": { "wasmoon": "1.16.0" }
+}

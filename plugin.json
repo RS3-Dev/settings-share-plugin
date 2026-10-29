@@ -1,0 +1,13 @@
+{
+  "name": "settingsshare",
+  "version": "2.0.0",
+  "description": "Temporary settings sharing, cross-device sync, and one-use downloads for plugins.",
+  "contactEmailAddress": "plugins@rs3.dev",
+  "requiredDependencies": {},
+  "requiredPermissions": ["httpAccess"],
+  "optionalPermissions": [],
+  "urls": {
+    "service": "https://settings.rs3.dev",
+    "privacy": "https://settings.rs3.dev/privacy"
+  }
+}
