@@ -36,11 +36,12 @@ inside your client's plugin directory.
 The dependency can load before HTTP access is granted. Enable its optional
 `httpAccess` permission before making requests; otherwise each helper returns
 `nil, "Settings Share requires HTTP access."` without starting a request.
-Version 3.0.0 draws share UUID bytes directly from the client's random generator,
+Version 3.1.0 draws share UUID bytes directly from the client's random generator,
 keeps generation entirely local, and processes responses on Logic. Empty native
 completion/progress functions avoid the nil-function error observed when those
 callbacks were omitted. Share upload, confirmation, and retrieval passed
-in-client testing in 2.0.11; 3.0.0 retains that transport and removes sync.
+in-client testing in 2.0.11. Version 3.1.0 keeps that request sequencing and
+removes crash diagnostics; it still needs a native client smoke test after cleanup.
 For local testing, run these console commands in order:
 
 ```text
@@ -91,42 +92,24 @@ The helper owns request creation, completion polling, and callback dispatch.
 Your plugin needs no extra Logic subscription, native HTTP callbacks, coroutine,
 thread, or blocking wait to use these methods.
 
-## HTTP execution and verified behavior
+## HTTP execution
 
-Helper **2.0.11** with debugger **1.0.11** passed manual testing in RuneScape
-client **951-1** on 29 October 2026: local code generation, loop preparation,
-upload without an application callback, normal upload confirmation with a UI
-update, and retrieval of the uploaded string. No crash or nil-function error was
-reported in that sequence. This validates the tested share path, rather than a
-guarantee for every client version or condition. Dump passed the live API compatibility tests but still needs equivalent in-client
-confirmation. Version 3.0.0 removes the sync API; the tested HTTP transport is
-unchanged from 2.0.11. Plugins that used `settingsshare.sync` must remove those
-calls before upgrading. There are no plugin-name registrations or player IDs in
-the remaining share and dump APIs.
+Requests run in order with one active request and a maximum of 32 queued/active
+entries. The helper creates requests, polls completion, reads responses, and
+invokes application callbacks on separate `Event.Logic` updates. The network
+request runs in the background; there is no blocking wait or coroutine handler.
+The request stays alive until its result is delivered.
 
-Internally, requests advance through permission checking, construction, headers,
-POST, completion polling, response reading, and application callback dispatch on
-separate `Event.Logic` updates. The helper handles requests in order, retaining
-one active request and at most 32 queued/active entries. Loading the dependency
-does not initialize HTTP or subscribe to Logic; subscription is lazy.
+Both native HTTP callbacks are empty functions inside `main.lua`. Supplying them
+removed the client's nil-function error in testing. Response processing and your
+application callback remain on Logic. The earlier share path passed in-client
+testing in client 951-1; automated tests and live API checks complement that test,
+but do not prove native behavior after this cleanup.
 
-Every native POST receives **empty completion and progress functions**. Those
-functions read no fields, change no state, and invoke no UI or application code.
-The helper reads the response and invokes your application callback from Logic.
-The network request still runs in the background; the helper does not block.
-
-Earlier tests that omitted the native callbacks reported
-`attempt to call a nil value`. Supplying both empty functions removed that error
-in the tested sequence. This supports missing native callback handling as the
-cause of that error; it does not prove the cause of every earlier process crash
-or identify which omitted callback was invoked. Keep this workaround inside the
-helper so consuming plugins can use the ordinary callback API shown below.
-
-For diagnosis, `settingsshare.setDebugLogging(true)` enables HTTP stage messages
-without logging settings, codes, player IDs, or response contents. Logging is off
-by default. The optional `settingsshare.diagnostics` interface provides a manual
-HTTP probe and local phase checkpoints; neither is needed for ordinary use. See
-the [debug example](examples/settingssharedebug/README.md) for those controls.
+Version 3.1.0 removes the crash probe, checkpoints, and diagnostic logging. The
+runtime contains only `main.lua`, `plugin.json`, `lib/json.lua`, and `lib/uuid.lua`.
+The share/dump methods keep their existing signatures. Sync was removed in 3.0.0;
+plugins using `settingsshare.sync` must remove those calls before upgrading.
 
 ## Export settings
 
@@ -150,7 +133,7 @@ The UUID is generated locally and returned before any upload response. The
 callback receives the same code after the server confirms it was stored. Treat
 the immediate return as pending; offer it for sharing only after confirmation.
 
-For debugging, generation and upload can also be separate steps:
+If your UI needs separate generation and upload actions:
 
 ```lua
 local code, problem = settingsshare.createCode() -- No HTTP, events, or permission check.
@@ -195,9 +178,7 @@ contents cannot be overwritten. Every successful read atomically renews its TTL
 to seven days; a missing or expired code cannot be revived by reading it.
 
 Each UUID has 32 hexadecimal characters and four separator hyphens. The client
-draws 16 fresh random bytes and sets the UUID version/variant fields. This removes
-the previous generator's private 31-bit state; it does not establish that the
-client's random source is cryptographically secure. The server rejects a duplicate
+draws 16 fresh random bytes and sets the UUID version/variant fields. The client's random source is not guaranteed to be cryptographically secure. The server rejects a duplicate
 live code instead of overwriting another share. There is no preliminary request
 to ask the server to generate a share code.
 
@@ -277,7 +258,7 @@ GET requests and query strings never redeem a dump.
 
 ## Development
 
-With Node.js 22 or newer, run all ten Lua tests in the bundled Lua 5.4 WebAssembly
+With Node.js 22 or newer, run the Lua tests in the bundled Lua 5.4 WebAssembly
 runtime:
 
 ```sh
@@ -296,9 +277,6 @@ lua5.4 tests/transport_polling_test.lua
 lua5.4 tests/uuid_test.lua
 lua5.4 tests/debug_example_test.lua
 lua5.4 tests/share_stages_test.lua
-lua5.4 tests/http_probe_test.lua
-lua5.4 tests/checkpoint_test.lua
-lua5.4 tests/http_callbacks_test.lua
 ```
 
 Tests mock the client bindings and verify that the native callbacks do not inspect
@@ -337,6 +315,6 @@ Build an upload ZIP with PowerShell:
 ./tools/package.ps1
 ```
 
-The output is `artifacts/settingsshare-3.0.0.zip`, with `main.lua`, `plugin.json`,
+The output is `artifacts/settingsshare-3.1.0.zip`, with `main.lua`, `plugin.json`,
 and `lib/` at the ZIP root as required for submission. Tests and documentation
 are excluded from the runtime package.

@@ -2,8 +2,8 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 local Json = require("lib/json")
 local requests, onLogic, subscriptions = {}, nil, 0
 local inLogic, frame, nativeFrame, nativeGroup, responseFrame = false, 0, -1, nil, -1
-local stages = {}
-log = function(_, stage) stages[#stages + 1] = stage end
+log = function() error("runtime must not log or inspect requests from native callbacks") end
+PersistentDB = setmetatable({}, { __index = function() error("runtime must not access checkpoint storage") end })
 local function operation(group)
     assert(inLogic, "native operations must run on Logic")
     assert(frame ~= nativeFrame or (group == "response" and nativeGroup == "response"),
@@ -57,8 +57,7 @@ local function tick(count)
     end
 end
 local api = dofile("main.lua")
-assert(subscriptions == 0 and #stages == 0, "loading must not subscribe or initialize HTTP")
-api.setDebugLogging(true)
+assert(subscriptions == 0, "loading must not subscribe or initialize HTTP")
 local pendingCode, calls = nil, 0
 pendingCode = api.write("settings", function(code, problem)
     assert(inLogic and frame > responseFrame, "dispatch must follow response reading on a separate update")
@@ -74,15 +73,17 @@ tick()
 assert(requests[1].body == nil, "header setup must not POST")
 tick()
 assert(requests[1].body.code == pendingCode and subscriptions == 1)
+local forbidden = function() error("native callbacks must not inspect the request") end
 local unreadable = setmetatable({}, {
-    __index = function() error("native callbacks must not read the request") end,
-    __newindex = function() error("native callbacks must not change the request") end,
+    __index = forbidden, __newindex = forbidden, __pairs = forbidden,
+    __len = forbidden, __tostring = forbidden, __call = forbidden,
 })
--- Simulate native callbacks outside Logic, even before completion.
-requests[1].progress(unreadable)
-requests[1].completion(unreadable)
+-- Simulate native callbacks outside Logic, including absent request data.
+for _, callback in ipairs({ requests[1].progress, requests[1].completion }) do
+    for _ = 1, 20 do callback(unreadable); callback(nil) end
+end
 assert(calls == 0, "native callbacks must not dispatch application results")
-api.setDebugLogging(false)
+
 tick()
 assert(calls == 0)
 requests[1].finished, requests[1].successful, requests[1].data = true, true, Json.encode({ code = pendingCode })

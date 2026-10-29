@@ -1,20 +1,12 @@
 local Json = require("lib/json")
 local UUID = require("lib/uuid")
-local HttpProbe = require("lib/http_probe")
-local Checkpoint = require("lib/checkpoint")
-local NativeCallbacks = require("lib/http_callbacks")
-local checkpoints = Checkpoint.new("3.0.0")
+-- Supply both callbacks to avoid the observed nil-function error; Logic owns results.
+local function onHttpComplete(_request) end
+local function onHttpProgress(_request) end
 local pendingRequests = {}
 local subscribed = false
 local processing = false
 local maxPendingRequests = 32
-local debugLogging = false
-
-local function trace(stage)
-    if debugLogging and type(log) == "function" then
-        pcall(function() log("[Settings Share HTTP] ", stage) end)
-    end
-end
 
 local function validUUID(value)
     return type(value) == "string" and #value == 36
@@ -50,7 +42,7 @@ local function decode(request)
     return ok and type(value) == "table" and value or nil
 end
 
-local function complete(request, callback, mode, expectedCode)
+local function readResult(request, mode, expectedCode)
     local successful = request.successful
     local response = decode(request)
     if successful ~= true or (response ~= nil and response.error ~= nil) then
@@ -60,24 +52,24 @@ local function complete(request, callback, mode, expectedCode)
         if type(message) ~= "string" or message == "" then
             message = "Settings Share request failed."
         end
-        reply(callback, nil, message, type(problem) == "table" and problem or nil)
+        return nil, message, type(problem) == "table" and problem or nil
     elseif mode == "share" then
         if response ~= nil and validUUID(response.code) and response.code == expectedCode then
-            reply(callback, response.code, nil, response)
+            return response.code, nil, response
         else
-            reply(callback, nil, "Settings Share returned an invalid code.")
+            return nil, "Settings Share returned an invalid code."
         end
     elseif mode == "dump" then
         local dumpCode = response ~= nil and response.code or nil
         if validUUID(dumpCode) then
-            reply(callback, dumpCode, nil, response)
+            return dumpCode, nil, response
         else
-            reply(callback, nil, "Settings Dump returned an invalid code.")
+            return nil, "Settings Dump returned an invalid code."
         end
     elseif response ~= nil and type(response.data) == "string" then
-        reply(callback, response.data, nil, response)
+        return response.data, nil, response
     else
-        reply(callback, nil, "Settings Share returned invalid data.")
+        return nil, "Settings Share returned invalid data."
     end
 end
 
@@ -89,37 +81,25 @@ local function processPending()
     -- One queued request, one phase per Logic update. Never combine constructor,
     -- header, POST, finished-flag reading, response reading, or caller dispatch.
     local phase = entry.phase
-    if entry.checkpointPhase ~= phase then
-        checkpoints.mark(phase, "before")
-        entry.checkpointPhase = phase
-    end
     local ok = pcall(function()
         if phase == "permission" then
             entry.problem = httpProblem()
             entry.phase = entry.problem and "dispatch" or "construct"
         elseif phase == "construct" then
-            trace("constructing request")
             entry.request = HTTPRequest.new(Plugin.urls.service, entry.path)
             entry.phase = "header"
         elseif phase == "header" then
-            trace("adding header")
             entry.request:AddHeader("Content-Type", "application/json")
             entry.phase = "post"
         elseif phase == "post" then
-            trace("calling Post with empty native callbacks")
-            entry.request:Post(entry.body, NativeCallbacks.completion, NativeCallbacks.progress)
+            entry.request:Post(entry.body, onHttpComplete, onHttpProgress)
             entry.phase = "wait"
-            trace("Post returned; waiting for finished")
         elseif phase == "wait" then
             if entry.request.finished == true then
-                trace("HTTP finished; response deferred to next Logic update")
                 entry.phase = "response"
             end
         elseif phase == "response" then
-            trace("reading HTTP response")
-            complete(entry.request, function(value, problem, metadata)
-                entry.value, entry.problem, entry.metadata = value, problem, metadata
-            end, entry.mode, entry.expectedCode)
+            entry.value, entry.problem, entry.metadata = readResult(entry.request, entry.mode, entry.expectedCode)
             entry.phase = "dispatch"
         elseif phase == "cancel" then
             pcall(function() entry.request:Cancel() end)
@@ -127,17 +107,14 @@ local function processPending()
         elseif phase == "dispatch" then
             -- Remove before the caller can queue work or recursively trigger Logic.
             table.remove(pendingRequests, 1)
-            trace("dispatching result on Logic")
             reply(entry.callback, entry.value, entry.problem, entry.metadata)
         end
     end)
-    checkpoints.mark(phase, ok and "after" or "lua_error")
     if not ok then
         entry.problem = (phase == "wait" or phase == "response")
             and "Settings Share could not read the HTTP response."
             or "Settings Share could not start the HTTP request."
         entry.phase = entry.request ~= nil and "cancel" or "dispatch"
-        trace("request phase failed: " .. tostring(phase))
     end
     processing = false
 end
@@ -148,9 +125,7 @@ local function ensureUpdateLoop()
     if Event == nil or Event.Logic == nil or type(Event.Logic.Subscribe) ~= "function" then
         return nil, "Settings Share requires the client Logic event to process HTTP responses."
     end
-    checkpoints.mark("queue-subscribe", "before")
-    -- The successful probe registers a small inline dispatcher with an empty
-    -- action slot. Bind the real pump only after native subscription returns.
+    -- Retain the native callback and bind the pump after subscription returns.
     transportCallback = function()
         local action = transportAction
         if action ~= nil then action() end
@@ -158,7 +133,6 @@ local function ensureUpdateLoop()
     local ok = pcall(function()
         Event.Logic.Subscribe("settingsshare.http", transportCallback)
     end)
-    checkpoints.mark("queue-subscribe", ok and "after" or "lua_error")
     if not ok then return nil, "Settings Share could not subscribe to the client Logic event." end
     transportAction = processPending
     subscribed = true
@@ -169,10 +143,7 @@ local function post(path, payload, callback, mode)
     if callback ~= nil and type(callback) ~= "function" then
         return nil, "Settings Share callback must be a function."
     end
-    trace("checking HTTP access")
-    checkpoints.mark("queue-permission", "before")
     local problem = httpProblem()
-    checkpoints.mark("queue-permission", "after")
     if problem ~= nil then return nil, problem end
     if #pendingRequests >= maxPendingRequests then
         return nil, "Settings Share has too many pending requests. Try again after they finish."
@@ -184,9 +155,7 @@ local function post(path, payload, callback, mode)
     local entry = { path = path, body = Json.encode(payload), callback = callback, mode = mode, phase = "permission",
         expectedCode = mode == "share" and payload.code or nil }
     pendingRequests[#pendingRequests + 1] = entry
-    checkpoints.mark("queued", "after")
-    trace("queued for next Logic update")
-    return entry
+    return true
 end
 
 local function createCode()
@@ -201,14 +170,12 @@ end
 local function upload(code, data, callback)
     if not validUUID(code) then return nil, "Settings Share requires a valid UUID code." end
     if type(data) ~= "string" then return nil, "Settings Share requires a string." end
-    local request, problem = post(
+    return post(
         "/api/v1/settings-share/create",
         { code = code, data = data },
         callback,
         "share"
     )
-    if request == nil then return nil, problem end
-    return true
 end
 
 local function write(data, callback)
@@ -223,36 +190,21 @@ end
 
 local function read(code, callback)
     if type(code) ~= "string" then return nil, "Settings Share requires a code." end
-    local request, problem = post(
+    return post(
         "/api/v1/settings-share/fetch",
         { code = string.lower(string.match(code, "^%s*(.-)%s*$")) },
         callback,
         "read"
     )
-    if request == nil then return nil, problem end
-    return true
 end
 
 local function createDump(data, callback)
     if type(data) ~= "string" then return nil, "Settings Dump requires a string." end
-    local request, problem = post("/api/v1/settings-dump/create", { data = data }, callback, "dump")
-    if request == nil then return nil, problem end
-    return true
-end
-
-local diagnostics = HttpProbe.new(validUUID)
-diagnostics.armCrashLog = checkpoints.enable
-diagnostics.lastCheckpoint = checkpoints.read
-diagnostics.prepareTransport = function()
-    local armed, problem = checkpoints.enable()
-    if not armed then return nil, problem end
-    return ensureUpdateLoop()
+    return post("/api/v1/settings-dump/create", { data = data }, callback, "dump")
 end
 
 return {
-    version = "3.0.0",
-    diagnostics = diagnostics,
+    version = "3.1.0",
     createCode = createCode, upload = upload,
     read = read, write = write, dump = { create = createDump },
-    setDebugLogging = function(enabled) debugLogging = enabled == true end,
 }
