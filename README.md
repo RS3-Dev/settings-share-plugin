@@ -79,3 +79,6 @@ Anyone with a code can retrieve its contents. Only send non-sensitive settings
 and validate imported data. Plugin names identify callers, not authenticated
 owners. Read the [privacy notice](https://settings.rs3.dev/privacy) for storage,
 retention, and contact information.
+
+Licensed under [BSD-2-Clause](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) for
+how to report bugs or suggest changes.
