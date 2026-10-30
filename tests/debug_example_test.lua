@@ -156,7 +156,7 @@ local function statusContains(text)
     end
     return false
 end
-assert(statusContains("Helper 4.0.0 | Debug 1.3.0"))
+assert(statusContains("Helper 1.0.0 | Debug 1.3.0"))
 inputs[1].content = "debug string"
 click("Create share")
 local localCode = inputs[2].content

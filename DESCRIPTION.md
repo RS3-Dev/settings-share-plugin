@@ -9,7 +9,7 @@ The library is format agnostic: your plugin converts its settings into a string,
 
 Once declared as a dependency, the library is available through the `settingsshare` global. `write` returns a locally generated pending code immediately; its callback confirms the upload.
 
-Every network call requires your plugin name as its first argument. The name is sent as the `User-Agent` header: use a stable name of 1-128 printable ASCII characters, without leading/trailing spaces or control characters. This identifies the caller and does not authenticate it. Version 4 requires updating older calls to include this argument.
+Every network call requires your plugin name as its first argument. The name is sent as the `User-Agent` header: use a stable name of 1-128 printable ASCII characters, without leading/trailing spaces or control characters. This identifies the caller and does not authenticate it.
 
 Call the helper from a normal plugin action and supply a callback for the result. The library handles HTTP and completion polling internally, then invokes your callback from the normal Logic update. Check both the immediate return and callback errors. You do not need your own HTTP request, update-loop subscription, or blocking wait. If a callback updates UI, first check that the panel is still open and the result belongs to its current request.
 

@@ -219,7 +219,7 @@ local function createDump(pluginName, data, callback)
 end
 
 return {
-    version = "4.0.0",
+    version = "1.0.0",
     createCode = createCode, upload = upload,
     read = read, write = write, dump = { create = createDump },
 }

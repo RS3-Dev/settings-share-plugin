@@ -22,6 +22,7 @@ page is **https://settings.rs3.dev/dump**. The manifest declares `service` and
 `privacy` URL aliases; all HTTP API calls use the same `service` base URL with
 different endpoint paths.
 
+Start with the [plugin integration guide](USAGE.md) for setup and copyable examples.
 The ready-to-paste plugin listing is in [DESCRIPTION.md](DESCRIPTION.md).
 
 For a small in-game test panel, install the
@@ -36,13 +37,11 @@ inside your client's plugin directory.
 The dependency can load before HTTP access is granted. Enable its optional
 `httpAccess` permission before making requests; otherwise each helper returns
 `nil, "Settings Share requires HTTP access."` without starting a request.
-Version 4.0.0 draws share UUID bytes directly from the client's random generator,
-keeps generation entirely local, and processes responses on Logic. Empty native
-completion/progress functions avoid the nil-function error observed when those
-callbacks were omitted. Share upload, confirmation, and retrieval passed
-in-client testing in 2.0.11. Version 4.0.0 retains the queue and empty native
-callbacks, and adds a separate User-Agent header phase. It needs a native client
-smoke test after upgrading.
+Release **1.0.0** generates share UUIDs locally and processes HTTP results on
+Logic. Empty native completion/progress callbacks preserve the workaround for
+the client's nil-function error. Automated tests and live API checks pass; the
+current build still needs an in-game smoke test after upgrading.
+
 For local testing, run these console commands in order:
 
 ```text
@@ -57,7 +56,7 @@ client reports a dependency failure, run `plist` and check that the local
 `settingsshare` entry is enabled; a dependency error alone does not identify
 the underlying cause.
 
-## Version 4: required caller name
+## Required caller name
 
 Every network method requires your plugin name as its **first argument**:
 
@@ -73,7 +72,7 @@ The name is sent unchanged as the HTTP `User-Agent` header. Use a stable name of
 characters. Internal spaces are allowed. Invalid names fail immediately with
 `nil, problem`, without starting a request or invoking the callback.
 
-This is a breaking change from version 3: add the name to every network call.
+Add your plugin name to every network call.
 `createCode()` is local and still takes no arguments. Names identify callers;
 they are self-reported, not authentication or a registry. Share codes remain
 readable by anyone holding the code, regardless of the caller's name. The helper
@@ -129,10 +128,9 @@ application callback remain on Logic. The earlier share path passed in-client
 testing in client 951-1; automated tests and live API checks complement that test,
 but do not prove native behavior after this cleanup.
 
-Version 3.1.0 removes the crash probe, checkpoints, and diagnostic logging. The
-runtime contains only `main.lua`, `plugin.json`, `lib/json.lua`, and `lib/uuid.lua`.
-Version 4 requires a caller name on every network method, as shown above. Sync was removed in 3.0.0;
-plugins using `settingsshare.sync` must remove those calls before upgrading.
+The runtime contains only `main.lua`, `plugin.json`, `lib/json.lua`, and
+`lib/uuid.lua`. It provides share codes and one-use dumps. Each network method
+requires a caller name; `createCode()` is local and takes no arguments.
 
 ## Export settings
 
@@ -339,6 +337,6 @@ Build an upload ZIP with PowerShell:
 ./tools/package.ps1
 ```
 
-The output is `artifacts/settingsshare-4.0.0.zip`, with `main.lua`, `plugin.json`,
+The output is `artifacts/settingsshare-1.0.0.zip`, with `main.lua`, `plugin.json`,
 and `lib/` at the ZIP root as required for submission. Tests and documentation
 are excluded from the runtime package.

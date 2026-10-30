@@ -50,7 +50,7 @@ assert(type(api.read) == "function" and type(api.write) == "function")
 assert(api.Read == nil and api.Write == nil and api.Poll == nil)
 local exported = 0
 for _ in pairs(api) do exported = exported + 1 end
-assert(exported == 6 and api.version == "4.0.0")
+assert(exported == 6 and api.version == "1.0.0")
 assert(api.diagnostics == nil and api.setDebugLogging == nil, "crash diagnostics are not part of the runtime")
 assert(type(api.createCode) == "function" and type(api.upload) == "function")
 assert(api.sync == nil, "settings sync is no longer exported")

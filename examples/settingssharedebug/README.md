@@ -19,7 +19,7 @@ ppe settingsshare httpAccess
 pon settingssharedebug
 ```
 
-The footer shows **Helper 4.0.0 | Debug 1.3.0**. Use `prl settingssharedebug` to
+The footer shows **Helper 1.0.0 | Debug 1.3.0**. Use `prl settingssharedebug` to
 reopen the panel. When upgrading the helper, disable the debug panel first,
 reload the helper, then re-enable the panel.
 
