@@ -15,6 +15,13 @@ local function validUUID(value)
         and value:match("^[0-9a-f]+%-[0-9a-f]+%-4[0-9a-f]+%-[89ab][0-9a-f]+%-[0-9a-f]+$") ~= nil
 end
 
+local function pluginNameProblem(name)
+    if type(name) ~= "string" or #name < 1 or #name > 128
+        or name:find("[^ -~]") or name:match("^ ") or name:match(" $") then
+        return "Settings Share requires a plugin name of 1-128 printable ASCII characters without surrounding spaces."
+    end
+end
+
 local function httpProblem()
     if PluginPermissions == nil or PluginPermissions.httpAccess == nil
         or Plugin == nil or type(Plugin.HasPermission) ~= "function" then
@@ -90,6 +97,9 @@ local function processPending()
             entry.phase = "header"
         elseif phase == "header" then
             entry.request:AddHeader("Content-Type", "application/json")
+            entry.phase = "user-agent"
+        elseif phase == "user-agent" then
+            entry.request:AddHeader("User-Agent", entry.pluginName)
             entry.phase = "post"
         elseif phase == "post" then
             entry.request:Post(entry.body, onHttpComplete, onHttpProgress)
@@ -139,11 +149,13 @@ local function ensureUpdateLoop()
     return true
 end
 
-local function post(path, payload, callback, mode)
+local function post(pluginName, path, payload, callback, mode)
+    local problem = pluginNameProblem(pluginName)
+    if problem ~= nil then return nil, problem end
     if callback ~= nil and type(callback) ~= "function" then
         return nil, "Settings Share callback must be a function."
     end
-    local problem = httpProblem()
+    problem = httpProblem()
     if problem ~= nil then return nil, problem end
     if #pendingRequests >= maxPendingRequests then
         return nil, "Settings Share has too many pending requests. Try again after they finish."
@@ -152,7 +164,7 @@ local function post(path, payload, callback, mode)
     if not updateReady then return nil, updateProblem end
     -- No native request is constructed or started on the caller's UI stack.
     -- The queue strongly retains the body, callback, and then the native request.
-    local entry = { path = path, body = Json.encode(payload), callback = callback, mode = mode, phase = "permission",
+    local entry = { pluginName = pluginName, path = path, body = Json.encode(payload), callback = callback, mode = mode, phase = "permission",
         expectedCode = mode == "share" and payload.code or nil }
     pendingRequests[#pendingRequests + 1] = entry
     return true
@@ -167,44 +179,47 @@ local function createCode()
     return code
 end
 
-local function upload(code, data, callback)
+local function upload(pluginName, code, data, callback)
     if not validUUID(code) then return nil, "Settings Share requires a valid UUID code." end
     if type(data) ~= "string" then return nil, "Settings Share requires a string." end
     return post(
-        "/api/v1/settings-share/create",
+        pluginName, "/api/v1/settings-share/create",
         { code = code, data = data },
         callback,
         "share"
     )
 end
 
-local function write(data, callback)
+local function write(pluginName, data, callback)
+    local problem = pluginNameProblem(pluginName)
+    if problem ~= nil then return nil, problem end
     if type(data) ~= "string" then return nil, "Settings Share requires a string." end
-    local code, problem = createCode()
+    local code
+    code, problem = createCode()
     if code == nil then return nil, problem end
     local started
-    started, problem = upload(code, data, callback)
+    started, problem = upload(pluginName, code, data, callback)
     if not started then return nil, problem end
     return code
 end
 
-local function read(code, callback)
+local function read(pluginName, code, callback)
     if type(code) ~= "string" then return nil, "Settings Share requires a code." end
     return post(
-        "/api/v1/settings-share/fetch",
+        pluginName, "/api/v1/settings-share/fetch",
         { code = string.lower(string.match(code, "^%s*(.-)%s*$")) },
         callback,
         "read"
     )
 end
 
-local function createDump(data, callback)
+local function createDump(pluginName, data, callback)
     if type(data) ~= "string" then return nil, "Settings Dump requires a string." end
-    return post("/api/v1/settings-dump/create", { data = data }, callback, "dump")
+    return post(pluginName, "/api/v1/settings-dump/create", { data = data }, callback, "dump")
 end
 
 return {
-    version = "3.1.0",
+    version = "4.0.0",
     createCode = createCode, upload = upload,
     read = read, write = write, dump = { create = createDump },
 }

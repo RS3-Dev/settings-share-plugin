@@ -2,6 +2,8 @@
 
 A standalone PrettyUI panel for the installed `settingsshare` dependency. It sends
 all requests through the helper and creates its own window when enabled in-game.
+Every call passes `SettingsShareDebug` as its plugin name, which the helper sends
+as the `User-Agent` header.
 
 ## Install
 
@@ -17,7 +19,7 @@ ppe settingsshare httpAccess
 pon settingssharedebug
 ```
 
-The footer shows **Helper 3.1.0 | Debug 1.2.0**. Use `prl settingssharedebug` to
+The footer shows **Helper 4.0.0 | Debug 1.3.0**. Use `prl settingssharedebug` to
 reopen the panel. When upgrading the helper, disable the debug panel first,
 reload the helper, then re-enable the panel.
 
@@ -42,4 +44,4 @@ results on Logic. Automated tests cover dispatch and UI lifetime; native client
 behavior still requires an in-game smoke test after cleanup.
 
 Build the example with `./tools/package.ps1 -Debug`. The output is
-`artifacts/settingssharedebug-1.2.0.zip`.
+`artifacts/settingssharedebug-1.3.0.zip`.

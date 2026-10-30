@@ -38,7 +38,11 @@ HTTPRequest = { new = function(_, path)
         end,
         __newindex = function(_, key, value) state[key] = value end,
     })
-    function request:AddHeader() operation("header") end
+    state.headers = {}
+    function request:AddHeader(name, value)
+        operation("header")
+        state.headers[name] = value
+    end
     function request:Post(body, completion, progress, ...)
         operation("post")
         assert(type(completion) == "function" and type(progress) == "function" and select("#", ...) == 0)
@@ -59,7 +63,7 @@ end
 local api = dofile("main.lua")
 assert(subscriptions == 0, "loading must not subscribe or initialize HTTP")
 local pendingCode, calls = nil, 0
-pendingCode = api.write("settings", function(code, problem)
+pendingCode = api.write("TestPlugin", "settings", function(code, problem)
     assert(inLogic and frame > responseFrame, "dispatch must follow response reading on a separate update")
     assert(code == pendingCode and problem == nil)
     calls = calls + 1
@@ -71,6 +75,8 @@ tick()
 assert(#requests == 1 and requests[1].body == nil, "construction must not POST")
 tick()
 assert(requests[1].body == nil, "header setup must not POST")
+tick()
+assert(requests[1].body == nil and requests[1].headers["User-Agent"] == "TestPlugin", "User-Agent setup must not POST")
 tick()
 assert(requests[1].body.code == pendingCode and subscriptions == 1)
 local forbidden = function() error("native callbacks must not inspect the request") end
@@ -99,25 +105,25 @@ assert(calls == 1)
 
 -- A callback may enqueue another request or recursively invoke Logic safely.
 local order = {}
-assert(api.read("first", function(data)
+assert(api.read("TestPlugin", "first", function(data)
     order[#order + 1] = data
-    assert(api.read("second", function(nextData) order[#order + 1] = nextData end))
+    assert(api.read("TestPlugin", "second", function(nextData) order[#order + 1] = nextData end))
     onLogic()
 end))
-tick(4)
+tick(5)
 local first = requests[#requests]
 first.finished, first.successful, first.data = true, true, '{"data":"first"}'
 tick(3)
 assert(#order == 1 and order[1] == "first")
-tick(4)
+tick(5)
 local second = requests[#requests]
 second.finished, second.successful, second.data = true, true, '{"data":"second"}'
 tick(3)
 assert(#order == 2 and order[2] == "second" and subscriptions == 1)
 
 local failed
-assert(api.read("timeout", function(value, err) failed = value == nil and err == "Timed out" end))
-tick(4)
+assert(api.read("TestPlugin", "timeout", function(value, err) failed = value == nil and err == "Timed out" end))
+tick(5)
 local timedOut = requests[#requests]
 timedOut.finished, timedOut.successful, timedOut.errorInfo = true, false, "Timed out"
 tick(3)
@@ -125,8 +131,8 @@ assert(failed)
 
 -- Retain native requests until completion, then release after dispatch.
 local weak = setmetatable({}, { __mode = "v" })
-assert(api.read("keep-alive"))
-tick(4)
+assert(api.read("TestPlugin", "keep-alive"))
+tick(5)
 weak[1] = requests[#requests]
 table.remove(requests)
 collectgarbage("collect")
@@ -138,27 +144,27 @@ assert(weak[1] == nil)
 
 -- FIFO: at most one active request, with 32 total queued/active entries.
 local beforeBatch = #requests
-for _ = 1, 32 do assert(api.read("pending")) end
-tick(4)
+for _ = 1, 32 do assert(api.read("TestPlugin", "pending")) end
+tick(5)
 assert(#requests == beforeBatch + 1)
-local started, problem = api.read("overflow")
+local started, problem = api.read("TestPlugin", "overflow")
 assert(started == nil and problem:find("too many pending", 1, true))
 for index = 1, 32 do
     local active = requests[#requests]
     active.finished, active.successful = true, false
     tick(3)
-    if index < 32 then tick(4) end
+    if index < 32 then tick(5) end
 end
-assert(api.read("slot-reclaimed"))
+assert(api.read("TestPlugin", "slot-reclaimed"))
 
 -- Never replace an unavailable Logic loop with response handling in native callbacks.
 Event = nil
 local unsupported = dofile("main.lua")
 local count = #requests
-started, problem = unsupported.write("settings")
+started, problem = unsupported.write("TestPlugin", "settings")
 assert(started == nil and problem:find("Logic event", 1, true) and #requests == count)
 Event = { Logic = { Subscribe = function() error("unavailable") end } }
 unsupported = dofile("main.lua")
-started, problem = unsupported.read("code")
+started, problem = unsupported.read("TestPlugin", "code")
 assert(started == nil and problem:find("could not subscribe", 1, true) and #requests == count)
 print("transport_polling_test: ok")

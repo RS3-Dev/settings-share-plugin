@@ -22,8 +22,8 @@ local helperEnv = setmetatable({
     PluginPermissions = { httpAccess = 1 },
     Plugin = { urls = { service = {} }, HasPermission = function() return true end },
     HTTPRequest = { new = function(_, path)
-        local request = { path = path, finished = false }
-        function request:AddHeader() end
+        local request = { path = path, finished = false, headers = {} }
+        function request:AddHeader(name, value) self.headers[name] = value end
         function request:Post(body, completion, progress, ...)
             assert(type(completion) == "function" and type(progress) == "function" and select("#", ...) == 0)
             self.body = Json.decode(body)
@@ -139,7 +139,7 @@ local function click(label)
                     "local code must be displayed without native HTTP construction")
             end
             inButtonHook = false
-            for _ = 1, 4 do tick() end
+            for _ = 1, 5 do tick() end
             return
         end
     end
@@ -156,10 +156,11 @@ local function statusContains(text)
     end
     return false
 end
-assert(statusContains("Helper 3.1.0 | Debug 1.2.0"))
+assert(statusContains("Helper 4.0.0 | Debug 1.3.0"))
 inputs[1].content = "debug string"
 click("Create share")
 local localCode = inputs[2].content
+assert(requests[1].headers["User-Agent"] == "SettingsShareDebug")
 assert(requests[1].path == "/api/v1/settings-share/create" and requests[1].body.data == "debug string")
 assert(type(requests[1].body.code) == "string" and #requests[1].body.code == 36)
 assert(requests[1].body.code == localCode and inputs[2].content == localCode and statusContains("waiting for response"))
@@ -172,14 +173,14 @@ assert(inputs[2].content == code and statusContains("Share created"))
 assert(all[inputs[2]].writes == codeWrites, "upload confirmation must not rewrite the code field")
 inputs[1].content = "changed locally"
 click("Fetch share")
-assert(requests[2].body.code == code)
+assert(requests[2].body.code == code and requests[2].headers["User-Agent"] == "SettingsShareDebug")
 finish({ data = "debug string", expiresInSeconds = 604800 })
 assert(inputs[1].content == "debug string" and statusContains("MATCH"))
 click("Create dump")
 finish({ error = { code = "rate_limited", message = "Wait", retryAfterSeconds = 42 } }, false)
 assert(statusContains("rate_limited") and statusContains("42s"))
 click("Create dump")
-assert(requests[4].path == "/api/v1/settings-dump/create")
+assert(requests[4].path == "/api/v1/settings-dump/create" and requests[4].headers["User-Agent"] == "SettingsShareDebug")
 finish({ code = code, expiresInSeconds = 86400 })
 assert(inputs[2].content == code and statusContains("settings.rs3.dev/dump"))
 

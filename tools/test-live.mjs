@@ -21,8 +21,8 @@ async function http(path, options = {}) {
   return response;
 }
 
-async function call(method, args) {
-  lua.global.set("__input", JSON.stringify({ method, args: Object.fromEntries(args.map((value, i) => [String(i + 1), value])) }));
+async function call(method, args, pluginName = "SettingsShareIntegrationTest") {
+  lua.global.set("__input", JSON.stringify({ method, pluginName, args: Object.fromEntries(args.map((value, i) => [String(i + 1), value])) }));
   await lua.doString(`
     local input = Json.decode(__input)
     __result, __calls = nil, 0
@@ -32,21 +32,22 @@ async function call(method, args) {
     end
     local a = input.args
     local started, problem
-    if input.method == "write" then started, problem = api.write(a["1"], callback)
-    elseif input.method == "read" then started, problem = api.read(a["1"], callback)
-    elseif input.method == "dump" then started, problem = api.dump.create(a["1"], callback)
+    if input.method == "write" then started, problem = api.write(input.pluginName, a["1"], callback)
+    elseif input.method == "read" then started, problem = api.read(input.pluginName, a["1"], callback)
+    elseif input.method == "dump" then started, problem = api.dump.create(input.pluginName, a["1"], callback)
     else error("Unknown method") end
     assert(started ~= nil, problem)
     __started = started
     assert(__calls == 0)
-    for _ = 1, 4 do tick() end
+    for _ = 1, 5 do tick() end
     assert(__calls == 0)
   `);
   assert.equal(jobs.length, 1, "one helper call must start exactly one request");
-  const { id, path, body, contentType } = jobs.shift();
+  const { id, path, body, contentType, userAgent } = jobs.shift();
   assert.equal(contentType, "application/json");
+  assert.equal(userAgent, pluginName);
   const started = lua.global.get("__started");
-  const response = await http(path, { method: "POST", headers: { "Content-Type": contentType }, body });
+  const response = await http(path, { method: "POST", headers: { "Content-Type": contentType, "User-Agent": userAgent }, body });
   const data = await response.text();
   lua.global.set("__response", JSON.stringify({ id, data, successful: response.ok, responseCode: response.status }));
   await lua.doString(`
@@ -90,7 +91,7 @@ try {
   console.log("PASS live backend health (share, dump)");
 
   lua.global.set("__base", base.origin);
-  lua.global.set("__send", (id, path, body, contentType) => { jobs.push({ id, path, body, contentType }); });
+  lua.global.set("__send", (id, path, body, contentType, userAgent) => { jobs.push({ id, path, body, contentType, userAgent }); });
   await lua.doString(`
     Json = require("lib/json")
     active = {}
@@ -106,15 +107,14 @@ try {
     HTTPRequest = { new = function(service, path)
       assert(inLogic and service == __base)
       nextId = nextId + 1
-      local request = { id = nextId, finished = false }
+      local request = { id = nextId, finished = false, headers = {} }
       function request:AddHeader(name, value)
-        assert(name == "Content-Type")
-        self.contentType = value
+        self.headers[name] = value
       end
       function request:Post(body, completion, progress, ...)
         assert(inLogic and type(completion) == "function" and type(progress) == "function" and select("#", ...) == 0)
         self.completionCallback, self.progressCallback = completion, progress
-        __send(self.id, path, body, self.contentType)
+        __send(self.id, path, body, self.headers["Content-Type"], self.headers["User-Agent"])
       end
       active[request.id] = request
       return request
@@ -129,7 +129,7 @@ try {
   for (const code of [share.value, `  ${share.value.toUpperCase()}\n`]) {
     success(await call("read", [code]), payload, 604800);
   }
-  console.log("PASS share round trip, code normalization, seven-day TTL response");
+  console.log("PASS share round trip, caller User-Agent headers, code normalization, seven-day TTL response");
   const limited = await call("write", ["synthetic rate-limit probe"]);
   failure(limited, 429, "rate_limited");
   assert.equal(limited.metadata.retryable, true);

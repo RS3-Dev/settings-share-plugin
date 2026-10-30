@@ -50,7 +50,7 @@ assert(type(api.read) == "function" and type(api.write) == "function")
 assert(api.Read == nil and api.Write == nil and api.Poll == nil)
 local exported = 0
 for _ in pairs(api) do exported = exported + 1 end
-assert(exported == 6 and api.version == "3.1.0")
+assert(exported == 6 and api.version == "4.0.0")
 assert(api.diagnostics == nil and api.setDebugLogging == nil, "crash diagnostics are not part of the runtime")
 assert(type(api.createCode) == "function" and type(api.upload) == "function")
 assert(api.sync == nil, "settings sync is no longer exported")
@@ -61,9 +61,9 @@ assert(type(api.dump) == "table" and type(api.dump.create) == "function")
 local deniedCallbackCalled = false
 local function deniedCallback() deniedCallbackCalled = true end
 for _, call in ipairs({
-    function() return api.write("settings", deniedCallback) end,
-    function() return api.read("code", deniedCallback) end,
-    function() return api.dump.create("settings", deniedCallback) end,
+    function() return api.write("TestPlugin", "settings", deniedCallback) end,
+    function() return api.read("TestPlugin", "code", deniedCallback) end,
+    function() return api.dump.create("TestPlugin", "settings", deniedCallback) end,
 }) do
     local started, problem = call()
     assert(started == nil and problem == "Settings Share requires HTTP access.")
@@ -73,12 +73,12 @@ permissionGranted = true
 
 local function start(fn, ...)
     local started, problem = fn(...)
-    if started then for _ = 1, 4 do logicUpdate() end end
+    if started then for _ = 1, 5 do logicUpdate() end end
     return started, problem
 end
 
 local written, writeProblem
-local started = start(api.write, "settings", function(value, problem)
+local started = start(api.write, "TestPlugin", "settings", function(value, problem)
     written, writeProblem = value, problem
 end)
 assert(type(started) == "string" and #started == 36 and written == nil)
@@ -92,7 +92,7 @@ for _ = 1, 3 do logicUpdate() end
 assert(written == code and writeProblem == nil)
 
 local fetched, readProblem
-assert(start(api.read, code, function(value, problem)
+assert(start(api.read, "TestPlugin", code, function(value, problem)
     fetched, readProblem = value, problem
 end) == true)
 assert(#requests == 2 and requests[2].path == "/api/v1/settings-share/fetch")
@@ -106,12 +106,13 @@ local Json = require("lib/json")
 assert(Json.decode(requests[1].body).data == "settings")
 assert(Json.decode(requests[1].body).code == code, "upload must include the client-generated code")
 assert(requests[1].headers["Content-Type"] == "application/json")
+assert(requests[1].headers["User-Agent"] == "TestPlugin")
 assert(requests[1].baseURL == Plugin.urls.service)
 
 local function fetchResult(response)
     local value, problem, calls
     calls = 0
-    assert(start(api.read, "  ABC-123\n", function(result, err)
+    assert(start(api.read, "TestPlugin", "  ABC-123\n", function(result, err)
         value, problem, calls = result, err, calls + 1
     end))
     local pending = requests[#requests]
@@ -137,38 +138,38 @@ value, problem = fetchResult({ successful = false, errorInfo = {} })
 assert(value == nil and problem == "Settings Share request failed.")
 
 local failure
-assert(start(api.write, "", function(_, err) failure = err end))
+assert(start(api.write, "TestPlugin", "", function(_, err) failure = err end))
 finish(requests[#requests], { successful = true, data = '{"code":"wrong"}' })
 assert(failure == "Settings Share returned an invalid code.")
 
 -- Confirmation must match the pending code, even if another code is valid.
-local otherPending = start(api.write, "settings", function(_, err) failure = err end)
+local otherPending = start(api.write, "TestPlugin", "settings", function(_, err) failure = err end)
 assert(otherPending ~= code)
 failure = nil
 finish(requests[#requests], { successful = true, data = '{"code":"' .. code .. '"}' })
 assert(failure == "Settings Share returned an invalid code.")
 
 -- A caller exception must not escape into the HTTP completion binding.
-assert(start(api.read, "code", function() error("caller failure") end))
+assert(start(api.read, "TestPlugin", "code", function() error("caller failure") end))
 finish(requests[#requests], { successful = true, data = '{"data":"ok"}' })
-assert(start(api.read, "code")) -- The callback remains optional.
+assert(start(api.read, "TestPlugin", "code")) -- The callback remains optional.
 finish(requests[#requests], { successful = true, data = '{"data":"ok"}' })
 
 local count = #requests
 local callbackCalled = false
 local function callback() callbackCalled = true end
-assert(start(api.write, {}, callback) == nil)
-assert(start(api.read, nil, callback) == nil)
-assert(start(api.write, "settings", true) == nil)
-assert(start(api.read, "code", {}) == nil)
+assert(start(api.write, "TestPlugin", {}, callback) == nil)
+assert(start(api.read, "TestPlugin", nil, callback) == nil)
+assert(start(api.write, "TestPlugin", "settings", true) == nil)
+assert(start(api.read, "TestPlugin", "code", {}) == nil)
 Plugin.HasPermission = function() return false end
-value, problem = start(api.read, "code", callback)
+value, problem = start(api.read, "TestPlugin", "code", callback)
 assert(value == nil and problem == "Settings Share requires HTTP access.")
 Plugin.HasPermission = function() error("permission unavailable") end
-assert(start(api.write, "settings", callback) == nil)
+assert(start(api.write, "TestPlugin", "settings", callback) == nil)
 Plugin.HasPermission = function() return true end
 Plugin.urls = nil
-assert(start(api.read, "code", callback) == nil)
+assert(start(api.read, "TestPlugin", "code", callback) == nil)
 Plugin.urls = { service = {} } -- Resolved URL aliases may be userdata-like values.
 local constructor = HTTPRequest.new
 for _, method in ipairs({ "AddHeader", "Post" }) do
@@ -178,27 +179,27 @@ for _, method in ipairs({ "AddHeader", "Post" }) do
         return pending
     end
     local setupProblem
-    value, problem = start(api.read, "code", function(_, err) setupProblem = err end)
+    value, problem = start(api.read, "TestPlugin", "code", function(_, err) setupProblem = err end)
     assert(value == true and problem == nil)
     for _ = 1, 2 do logicUpdate() end
     assert(setupProblem == "Settings Share could not start the HTTP request.")
 end
 HTTPRequest.new = constructor
 -- Exercise a resolved URL alias without making assumptions about its type.
-assert(start(api.read, "code"))
+assert(start(api.read, "TestPlugin", "code"))
 assert(requests[#requests].baseURL == Plugin.urls.service)
 finish(requests[#requests], { successful = true, data = '{"data":"ok"}' })
 count = #requests
 HTTPRequest.new = function() error("transport unavailable") end
 local setupProblem
-value, problem = start(api.write, "settings", function(_, err) setupProblem = err end)
+value, problem = start(api.write, "TestPlugin", "settings", function(_, err) setupProblem = err end)
 assert(type(value) == "string" and problem == nil)
 logicUpdate()
 assert(setupProblem == "Settings Share could not start the HTTP request.")
 HTTPRequest = nil
-assert(start(api.read, "code", callback) == nil)
+assert(start(api.read, "TestPlugin", "code", callback) == nil)
 Plugin = nil
-assert(start(api.read, "code", callback) == nil)
+assert(start(api.read, "TestPlugin", "code", callback) == nil)
 assert(#requests == count and not callbackCalled)
 
 assert(rawget(_G, "__settingsshare_state") == nil)

@@ -9,6 +9,8 @@ The library is format agnostic: your plugin converts its settings into a string,
 
 Once declared as a dependency, the library is available through the `settingsshare` global. `write` returns a locally generated pending code immediately; its callback confirms the upload.
 
+Every network call requires your plugin name as its first argument. The name is sent as the `User-Agent` header: use a stable name of 1-128 printable ASCII characters, without leading/trailing spaces or control characters. This identifies the caller and does not authenticate it. Version 4 requires updating older calls to include this argument.
+
 Call the helper from a normal plugin action and supply a callback for the result. The library handles HTTP and completion polling internally, then invokes your callback from the normal Logic update. Check both the immediate return and callback errors. You do not need your own HTTP request, update-loop subscription, or blocking wait. If a callback updates UI, first check that the panel is still open and the result belongs to its current request.
 
 ### Create a share code
@@ -16,7 +18,7 @@ Call the helper from a normal plugin action and supply a callback for the result
 Pass your serialized settings to `write`. The callback receives the code once the upload succeeds.
 
 ```lua
-local pendingCode, problem = settingsshare.write("your serialized settings", function(code, err)
+local pendingCode, problem = settingsshare.write("MyPlugin", "your serialized settings", function(code, err)
     if err then
         log("Could not share settings: ", err)
         return
@@ -34,7 +36,7 @@ The returned code is pending until the callback confirms success. New codes are 
 ### Retrieve shared settings
 
 ```lua
-local started, problem = settingsshare.read("share-code-here", function(data, err)
+local started, problem = settingsshare.read("MyPlugin", "share-code-here", function(data, err)
     if err then
         log("Could not retrieve settings: ", err)
         return
@@ -50,7 +52,7 @@ end
 ### Create a one-use download
 
 ```lua
-local started, problem = settingsshare.dump.create("your serialized settings", function(code, err, info)
+local started, problem = settingsshare.dump.create("MyPlugin", "your serialized settings", function(code, err, info)
     if err then
         log("Could not create dump: ", err)
         return

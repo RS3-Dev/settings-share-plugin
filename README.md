@@ -36,12 +36,13 @@ inside your client's plugin directory.
 The dependency can load before HTTP access is granted. Enable its optional
 `httpAccess` permission before making requests; otherwise each helper returns
 `nil, "Settings Share requires HTTP access."` without starting a request.
-Version 3.1.0 draws share UUID bytes directly from the client's random generator,
+Version 4.0.0 draws share UUID bytes directly from the client's random generator,
 keeps generation entirely local, and processes responses on Logic. Empty native
 completion/progress functions avoid the nil-function error observed when those
 callbacks were omitted. Share upload, confirmation, and retrieval passed
-in-client testing in 2.0.11. Version 3.1.0 keeps that request sequencing and
-removes crash diagnostics; it still needs a native client smoke test after cleanup.
+in-client testing in 2.0.11. Version 4.0.0 retains the queue and empty native
+callbacks, and adds a separate User-Agent header phase. It needs a native client
+smoke test after upgrading.
 For local testing, run these console commands in order:
 
 ```text
@@ -55,6 +56,28 @@ Use `prl settingssharedebug` to reopen an already loaded debug panel. If the
 client reports a dependency failure, run `plist` and check that the local
 `settingsshare` entry is enabled; a dependency error alone does not identify
 the underlying cause.
+
+## Version 4: required caller name
+
+Every network method requires your plugin name as its **first argument**:
+
+```lua
+settingsshare.write("MyPlugin", serializedSettings, callback)
+settingsshare.read("MyPlugin", shareCode, callback)
+settingsshare.upload("MyPlugin", shareCode, serializedSettings, callback)
+settingsshare.dump.create("MyPlugin", serializedSettings, callback)
+```
+
+The name is sent unchanged as the HTTP `User-Agent` header. Use a stable name of
+1-128 printable ASCII characters with no leading/trailing spaces or control
+characters. Internal spaces are allowed. Invalid names fail immediately with
+`nil, problem`, without starting a request or invoking the callback.
+
+This is a breaking change from version 3: add the name to every network call.
+`createCode()` is local and still takes no arguments. Names identify callers;
+they are self-reported, not authentication or a registry. Share codes remain
+readable by anyone holding the code, regardless of the caller's name. The helper
+uses POST for both uploads and retrievals; names are headers, not JSON fields.
 
 ## Integrating a consuming plugin
 
@@ -108,7 +131,7 @@ but do not prove native behavior after this cleanup.
 
 Version 3.1.0 removes the crash probe, checkpoints, and diagnostic logging. The
 runtime contains only `main.lua`, `plugin.json`, `lib/json.lua`, and `lib/uuid.lua`.
-The share/dump methods keep their existing signatures. Sync was removed in 3.0.0;
+Version 4 requires a caller name on every network method, as shown above. Sync was removed in 3.0.0;
 plugins using `settingsshare.sync` must remove those calls before upgrading.
 
 ## Export settings
@@ -116,7 +139,7 @@ plugins using `settingsshare.sync` must remove those calls before upgrading.
 Pass a serialized string owned by your plugin:
 
 ```lua
-local pendingCode, problem = settingsshare.write("myplugin:v1:serialized-settings", function(code, err)
+local pendingCode, problem = settingsshare.write("MyPlugin", "myplugin:v1:serialized-settings", function(code, err)
     if err ~= nil then
         log("Export failed: ", err)
         return
@@ -139,13 +162,13 @@ If your UI needs separate generation and upload actions:
 local code, problem = settingsshare.createCode() -- No HTTP, events, or permission check.
 -- Display/store code locally, then upload explicitly when requested:
 if code then
-    local queued, uploadProblem = settingsshare.upload(code, serializedSettings, function(confirmedCode, err, info)
+    local queued, uploadProblem = settingsshare.upload("MyPlugin", code, serializedSettings, function(confirmedCode, err, info)
         -- Only confirmation makes the code available to other devices.
     end)
 end
 ```
 
-`createCode()` returns a UUID or `nil, problem`. `upload(code, data, callback)`
+`createCode()` returns a UUID or `nil, problem`. `upload(pluginName, code, data, callback)`
 returns `true` when queued, or `nil, problem` on immediate failure. It sends the
 supplied code unchanged and does not generate another UUID. `write` remains the
 convenience API that combines these two operations. `settingsshare.version`
@@ -154,7 +177,7 @@ identifies the helper actually loaded by the client.
 ## Import settings
 
 ```lua
-local started, problem = settingsshare.read("123e4567-e89b-42d3-a456-426614174000", function(data, err)
+local started, problem = settingsshare.read("MyPlugin", "123e4567-e89b-42d3-a456-426614174000", function(data, err)
     if err ~= nil then
         log("Import failed: ", err)
         return
@@ -185,7 +208,7 @@ to ask the server to generate a share code.
 ## Create a one-use download
 
 ```lua
-local started, problem = settingsshare.dump.create(serializedSettings, function(code, err, info)
+local started, problem = settingsshare.dump.create("MyPlugin", serializedSettings, function(code, err, info)
     if err then
         log("Could not create dump: ", err)
         return
@@ -248,10 +271,10 @@ and contact information.
 
 All requests use JSON bodies with the `https://settings.rs3.dev` base URL:
 
-- `write(data, callback)` Ã¢â€ â€™ `POST /api/v1/settings-share/create` with `{code,data}`;
+- `write(pluginName, data, callback)` -> `POST /api/v1/settings-share/create` with `{code,data}`;
   the response must echo the client-generated `code`.
-- `read(code, callback)` Ã¢â€ â€™ `POST /api/v1/settings-share/fetch` with `{code}`.
-- `dump.create(data, callback)` Ã¢â€ â€™ `POST /api/v1/settings-dump/create` with `{data}`.
+- `read(pluginName, code, callback)` -> `POST /api/v1/settings-share/fetch` with `{code}`.
+- `dump.create(pluginName, data, callback)` -> `POST /api/v1/settings-dump/create` with `{data}`.
 
 The download page submits `POST /api/v1/settings-dump/download` with `{code}`.
 GET requests and query strings never redeem a dump.
@@ -277,6 +300,7 @@ lua5.4 tests/transport_polling_test.lua
 lua5.4 tests/uuid_test.lua
 lua5.4 tests/debug_example_test.lua
 lua5.4 tests/share_stages_test.lua
+lua5.4 tests/user_agent_test.lua
 ```
 
 Tests mock the client bindings and verify that the native callbacks do not inspect
@@ -293,7 +317,7 @@ npm run test:live
 
 This opt-in test sends real HTTPS requests through a Node adapter for the native
 HTTP bindings. It verifies share round trips, UUID confirmation, code
-normalization, TTL response values, rate-limit metadata,
+normalization, per-request User-Agent headers, TTL response values, rate-limit metadata,
 and a dump download that succeeds exactly once. It also checks `/healthz`, `/dump`,
 and `/privacy`. It never runs automatically in CI.
 
@@ -315,6 +339,6 @@ Build an upload ZIP with PowerShell:
 ./tools/package.ps1
 ```
 
-The output is `artifacts/settingsshare-3.1.0.zip`, with `main.lua`, `plugin.json`,
+The output is `artifacts/settingsshare-4.0.0.zip`, with `main.lua`, `plugin.json`,
 and `lib/` at the ZIP root as required for submission. Tests and documentation
 are excluded from the runtime package.
